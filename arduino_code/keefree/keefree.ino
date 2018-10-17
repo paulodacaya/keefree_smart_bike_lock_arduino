@@ -2,24 +2,24 @@
 #include <TinyGPS.h>
 
 // Arduino port usage
-const int BUZZER_PIN = 0;
-const int SIM_RX = 6;
-const int SIM_TX = 7;
-const int BLE_RX = 8;
-const int BLE_TX = 9;
-const int GPS_RX = 10;
-const int GPS_TX = 11;
-const int SOLENOID_PIN = 12;
-const int ANOLOGUE_PIN_1 = A5;
-const int ANOLOGUE_PIN_2 = A4;
-const int ANOLOGUE_PIN_3 = A3;
+const byte BUZZER_PIN = 4;
+const byte SIM_RX = 5;
+const byte SIM_TX = 6;
+const byte BLE_TX = 8;
+const byte BLE_RX = 9;
+const byte GPS_RX = 10;
+const byte GPS_TX = 11;
+const byte SOLENOID_PIN = 12;
+const byte ANOLOGUE_PIN_1 = A5;
+const byte ANOLOGUE_PIN_2 = A4;
+const byte ANOLOGUE_PIN_3 = A3;
 
 // SIM800L (Sim Module)
-SoftwareSerial simSerial(SIM_RX, SIM_TX);
+SoftwareSerial simSerial(SIM_TX, SIM_RX); // RX, TX
 bool hasSentSMS = false;
 
 // Bluetooth BLE
-SoftwareSerial bleSerial(BLE_RX, BLE_TX);
+SoftwareSerial bleSerial(BLE_TX, BLE_RX); // RX, TX
 const char RECEIVED_CONNECTED = 'c';
 const char SEND_CONNECTED[] = "connected";
 const char RECEIVED_UNLOCK = 'u';
@@ -29,12 +29,13 @@ const char SEND_SECURITY_ON[] = "security_on";
 const char RECIEVED_SECURITY_OFF = 'e';
 const char SEND_SECURITY_OFF[] = "security_off";
 const char RECIEVED_BUZZER_OFF = 'b';
+const char SEND_BUZZER_OFF[] = "buzzer_off";
 
 char message = ' ';
 bool isKeefreeSecurityOn = false;
 
 // GPS
-SoftwareSerial gpsSerial(GPS_RX, GPS_TX);
+SoftwareSerial gpsSerial(GPS_TX, GPS_RX); // RX, TX
 TinyGPS gps;
 char gpsData = ' ';
 bool hasSentGpsData = false;
@@ -43,6 +44,12 @@ bool hasSentGpsData = false;
 unsigned int outputX = 0;
 unsigned int outputY = 0;
 unsigned int outputZ = 0;
+
+unsigned int initialX = 0;
+unsigned int initialY = 0;
+unsigned int initialZ = 0;
+
+const int sensitivity = 10;
 unsigned int counter = 0;
 
 // function prototypes
@@ -120,7 +127,18 @@ void loop()
     Serial.println(outputZ);
     delay(1000);
 
-    if (outputX >= (outputX + 10) || outputY >= (outputY + 10) || outputY >= (outputY + 10))
+    // Set intial values
+    if (initialX == 0 && initialY == 0 && initialZ == 0)
+    {
+      initialX = outputX;
+      initialY = outputY;
+      initialZ = outputZ;
+    }
+
+    // if nudged (can adjust sensitivity value)
+    if (outputX <= (initialX - sensitivity) ||
+        outputY <= (initialY - sensitivity) ||
+        outputZ <= (initialZ - sensitivity))
     {
       Serial.print("nudge: ");
       Serial.println(counter);
@@ -128,21 +146,28 @@ void loop()
       counter++;
     }
 
-    if (counter >= 3)
+    if (counter >= 5)
     {
       Serial.println("Triggered Alarm...");
 
       // Set alarm off and send SMS
-      tone(BUZZER_PIN, 100, 1000);
-      delay(1100); // 1 second interval
+      tone(BUZZER_PIN, 500, 1000);
+      delay(1050); // 1 second interval
+      tone(BUZZER_PIN, 500, 1000);
+      delay(1050);
 
-      sendSMS();
+      //sendSMS();
     }
   }
   else
   {
     // Security turned off
     counter = 0;
+
+    // reset inital accelerometer values
+    initialX = 0;
+    initialY = 0;
+    initialZ = 0;
   }
 
   // Arduino Serial
@@ -161,7 +186,7 @@ void handleMessage(char *message)
   case RECEIVED_CONNECTED:
     Serial.println("RECEIVED CONNECTED");
 
-    //Send GPS data when keefree is connected
+    // Send GPS data when keefree is connected
     while (!hasSentGpsData)
     {
       gpsSerial.listen();
@@ -176,7 +201,7 @@ void handleMessage(char *message)
       }
     }
 
-    //sendMessage(SEND_CONNECTED);
+    sendMessage(SEND_CONNECTED);
     break;
 
   case RECEIVED_UNLOCK:
@@ -198,9 +223,11 @@ void handleMessage(char *message)
     break;
 
   case RECIEVED_BUZZER_OFF:
+    Serial.println("RECIEVED_BUZZER_OFF");
     noTone(BUZZER_PIN);
-    counter = 0;
+    counter = 0;        // reset accelerometer counter
     hasSentSMS = false; // reset SMS once Buzzer has been turned off
+    sendMessage(SEND_BUZZER_OFF);
     break;
 
   default:
@@ -211,22 +238,20 @@ void handleMessage(char *message)
 
 void handleGpsData(TinyGPS &gpsData)
 {
-  float f_latitude, f_longitude, f_speed, f_altitude;
+  long l_latitude, l_longitude;
   unsigned long ul_age;
+  float f_speed, f_altitude;
 
-  gpsData.f_get_position(&f_latitude, &f_longitude, &ul_age);
+  gpsData.get_position(&l_latitude, &l_longitude, &ul_age);
   f_speed = gpsData.f_speed_kmph();
   f_altitude = gpsData.f_altitude();
 
   // Latitude and Longitude
-  if (f_latitude >= -90 && f_latitude <= 90 && f_longitude >= -180 && f_longitude <= 180)
-  {
-    String lat = String(f_latitude);
-    String lon = String(f_longitude);
-    String latLon = String(lat + "," + lon);
-    sendMessage(latLon.c_str());
-    delay(2000); // Adding the delays prevents from sending messages together
-  }
+  String lat = String(l_latitude);
+  String lon = String(l_longitude);
+  String latLon = String(lat + "," + lon);
+  sendMessage(latLon.c_str());
+  delay(1000); // Adding the delays prevents from sending messages together
 
   // Speed
   if (f_speed > 0)
@@ -234,13 +259,15 @@ void handleGpsData(TinyGPS &gpsData)
     String s = String(f_speed);
     String speed = String(s + "kmph");
     sendMessage(speed.c_str());
-    delay(2000);
+    delay(1000);
   }
 
   // Altitude
+  f_altitude /= 100; // divide to get value value in metres
   String a = String(f_altitude);
   String altitude = String(a + "m");
   sendMessage(altitude.c_str());
+  delay(1000);
 
   Serial.println("Finishing sending GPS data...");
 }
@@ -297,6 +324,7 @@ void sendSMS()
   while (!hasSentSMS)
   {
     simSerial.listen();
+    Serial.println("sim serial isListening...");
 
     if (isSimAvailable())
     {
@@ -328,8 +356,3 @@ void sendSMS()
 // Can't use analogWrite() on pin 3 and 11 at the same time you are using the tone() function.
 // tone() cannot be used at the same time on two seprate pins. need to use noTone(#pin) stop previous one.
 //tone()
-
-// digitalWrite(BUZZER_PIN, HIGH);
-// delay(1000);
-// digitalWrite(BUZZER_PIN, LOW);
-// delay(1000);
